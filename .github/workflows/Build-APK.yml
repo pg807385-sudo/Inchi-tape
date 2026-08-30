@@ -1,11 +1,10 @@
-name: Build AR Measure APK
+name: Build APK with Logo
 
-# Put ARMeasure.zip in the root of your repo, then push.
-# This workflow unzips it and builds a debug APK.
+# Put your logo at public/logo.png in the repo root, then push (or run manually).
 on:
   push:
     branches: [ main ]
-  workflow_dispatch: {}   # lets you trigger it manually from the Actions tab
+  workflow_dispatch: {}
 
 jobs:
   build:
@@ -15,10 +14,39 @@ jobs:
       - name: Check out repo
         uses: actions/checkout@v4
 
-      - name: Unzip project
+      - name: Verify logo exists
         run: |
-          unzip -o ARMeasure.zip -d .
-          ls -la ARMeasure
+          if [ ! -f public/logo.png ]; then
+            echo "ERROR: public/logo.png not found. Add your logo there and push again."
+            exit 1
+          fi
+
+      - name: Install ImageMagick
+        run: sudo apt-get update && sudo apt-get install -y imagemagick
+
+      - name: Generate launcher icons from logo.png
+        run: |
+          set -e
+          RES=app/src/main/res
+
+          # Remove the old placeholder adaptive icon so our PNG icons take effect
+          rm -rf "$RES/mipmap-anydpi-v26"
+
+          declare -A SIZES=( [mdpi]=48 [hdpi]=72 [xhdpi]=96 [xxhdpi]=144 [xxxhdpi]=192 )
+
+          for density in "${!SIZES[@]}"; do
+            size="${SIZES[$density]}"
+            dir="$RES/mipmap-$density"
+            mkdir -p "$dir"
+            convert public/logo.png -resize ${size}x${size} -background none -gravity center -extent ${size}x${size} "$dir/ic_launcher.png"
+            cp "$dir/ic_launcher.png" "$dir/ic_launcher_round.png"
+          done
+
+          # Also drop a full-res copy in case anything references it directly
+          mkdir -p "$RES/drawable"
+          cp public/logo.png "$RES/drawable/logo.png"
+
+          ls -la "$RES"/mipmap-*
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -29,19 +57,18 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Generate Gradle wrapper (project has none checked in)
+      - name: Generate Gradle wrapper (if not checked in)
         run: |
-          cd ARMeasure
-          gradle wrapper --gradle-version 8.7
+          if [ ! -f gradlew ]; then
+            gradle wrapper --gradle-version 8.7
+          fi
           chmod +x gradlew
 
       - name: Build debug APK
-        run: |
-          cd ARMeasure
-          ./gradlew assembleDebug --stacktrace
+        run: ./gradlew assembleDebug --stacktrace
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ar-measure-debug-apk
-          path: ARMeasure/app/build/outputs/apk/debug/app-debug.apk
+          name: app-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
