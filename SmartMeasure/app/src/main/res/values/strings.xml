@@ -1,0 +1,15 @@
+<resources>
+    <string name="app_name">Smart Measure</string>
+    <string name="calibrate_prompt">Enter the height of your phone above the ground (in meters), then hold it level and tap Calibrate</string>
+    <string name="calibrate_button">Calibrate level</string>
+    <string name="calibrated_ok">Calibrated. Aim at the base of the object and tap \"Set Base\"</string>
+    <string name="set_base">Set Base</string>
+    <string name="set_top">Set Top</string>
+    <string name="reset">Reset</string>
+    <string name="distance_mode">Distance to point</string>
+    <string name="height_mode">Object height</string>
+    <string name="aim_base_hint">Aim the crosshair at the base of the object, then tap Set Base</string>
+    <string name="aim_top_hint">Now aim the crosshair at the top of the object, then tap Set Top</string>
+    <string name="aim_point_hint">Aim the crosshair at a point on the ground, then tap Measure</string>
+    <string name="measure_button">Measure</string>
+</resources>
