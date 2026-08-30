@@ -1,15 +1,13 @@
 name: Unzip Project and Push
 
-# Put ARMeasure.zip in the root of your repo, then run this workflow.
-# It unzips the archive and commits the extracted files back into the repo.
 on:
   push:
     paths:
       - 'SmartMeasure.zip'
-  workflow_dispatch: {}   # lets you trigger it manually from the Actions tab
+  workflow_dispatch: {}
 
 permissions:
-  contents: write   # needed so the workflow can push commits back to the repo
+  contents: write
 
 jobs:
   unzip-and-push:
@@ -21,23 +19,42 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Unzip project
+      - name: Wipe old project files (keep .git, .github, and the new zip)
         run: |
-          unzip -o SmartMeasure.zip -d .
-          ls -la SmartMeasure
+          find . -mindepth 1 -maxdepth 1 \
+            ! -name '.git' \
+            ! -name '.github' \
+            ! -name 'SmartMeasure.zip' \
+            -exec rm -rf {} +
 
-      - name: Remove the zip now that it's extracted
-        run: git rm --cached SmartMeasure.zip || true
+      - name: Unzip into a clean temp dir
+        run: |
+          rm -rf /tmp/extracted
+          mkdir -p /tmp/extracted
+          unzip -o SmartMeasure.zip -d /tmp/extracted
 
-      - name: Commit and push extracted files
+      - name: Move contents directly to repo root
+        run: |
+          if [ -d /tmp/extracted/SmartMeasure ] && [ "$(ls /tmp/extracted | wc -l)" -eq 1 ]; then
+            SRC=/tmp/extracted/SmartMeasure
+          else
+            SRC=/tmp/extracted
+          fi
+          shopt -s dotglob
+          mv "$SRC"/* .
+          ls -la
+
+      - name: Delete the zip file from the repo
+        run: rm -f SmartMeasure.zip
+
+      - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add SmartMeasure
           git add -A
           if git diff --cached --quiet; then
             echo "Nothing to commit"
           else
-            git commit -m "Unzip SmartMeasure.zip and commit extracted project"
+            git commit -m "Replace ARCore project with non-AR Smart Measure app"
             git push
           fi
