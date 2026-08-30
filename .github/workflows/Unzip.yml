@@ -5,7 +5,7 @@ name: Unzip Project and Push
 on:
   push:
     paths:
-      - 'ARMeasure.zip'
+      - 'SmartMeasure.zip'
   workflow_dispatch: {}   # lets you trigger it manually from the Actions tab
 
 permissions:
@@ -23,21 +23,21 @@ jobs:
 
       - name: Unzip project
         run: |
-          unzip -o ARMeasure.zip -d .
-          ls -la ARMeasure
+          unzip -o SmartMeasure.zip -d .
+          ls -la SmartMeasure
 
       - name: Remove the zip now that it's extracted
-        run: git rm --cached ARMeasure.zip || true
+        run: git rm --cached SmartMeasure.zip || true
 
       - name: Commit and push extracted files
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add ARMeasure
+          git add SmartMeasure
           git add -A
           if git diff --cached --quiet; then
             echo "Nothing to commit"
           else
-            git commit -m "Unzip ARMeasure.zip and commit extracted project"
+            git commit -m "Unzip SmartMeasure.zip and commit extracted project"
             git push
           fi
