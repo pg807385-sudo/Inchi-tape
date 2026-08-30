@@ -1,13 +1,15 @@
 name: Unzip Project and Push
 
+# Put ARMeasure.zip in the root of your repo, then run this workflow.
+# It unzips the archive and commits the extracted files back into the repo.
 on:
   push:
     paths:
       - 'ARMeasure.zip'
-  workflow_dispatch: {}
+  workflow_dispatch: {}   # lets you trigger it manually from the Actions tab
 
 permissions:
-  contents: write
+  contents: write   # needed so the workflow can push commits back to the repo
 
 jobs:
   unzip-and-push:
@@ -19,39 +21,23 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Remove any old extracted folder (flatten previous run too)
-        run: rm -rf ARMeasure
-
-      - name: Unzip into a clean temp dir
+      - name: Unzip project
         run: |
-          rm -rf /tmp/extracted
-          mkdir -p /tmp/extracted
-          unzip -o ARMeasure.zip -d /tmp/extracted
+          unzip -o ARMeasure.zip -d .
+          ls -la ARMeasure
 
-      - name: Move contents directly to repo root
-        run: |
-          # If the zip has a single top-level "ARMeasure" folder, reach inside it
-          # and move its contents to repo root — no wrapper folder.
-          if [ -d /tmp/extracted/ARMeasure ] && [ "$(ls /tmp/extracted | wc -l)" -eq 1 ]; then
-            SRC=/tmp/extracted/ARMeasure
-          else
-            SRC=/tmp/extracted
-          fi
-          shopt -s dotglob
-          mv "$SRC"/* .
-          ls -la
+      - name: Remove the zip now that it's extracted
+        run: git rm --cached ARMeasure.zip || true
 
-      - name: Delete the zip file from the repo
-        run: rm -f ARMeasure.zip
-
-      - name: Commit and push
+      - name: Commit and push extracted files
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ARMeasure
           git add -A
           if git diff --cached --quiet; then
             echo "Nothing to commit"
           else
-            git commit -m "Flatten project to repo root and remove zip"
+            git commit -m "Unzip ARMeasure.zip and commit extracted project"
             git push
           fi
