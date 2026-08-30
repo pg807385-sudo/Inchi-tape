@@ -1,0 +1,43 @@
+name: Unzip Project and Push
+
+# Put ARMeasure.zip in the root of your repo, then run this workflow.
+# It unzips the archive and commits the extracted files back into the repo.
+on:
+  push:
+    paths:
+      - 'ARMeasure.zip'
+  workflow_dispatch: {}   # lets you trigger it manually from the Actions tab
+
+permissions:
+  contents: write   # needed so the workflow can push commits back to the repo
+
+jobs:
+  unzip-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Unzip project
+        run: |
+          unzip -o ARMeasure.zip -d .
+          ls -la ARMeasure
+
+      - name: Remove the zip now that it's extracted
+        run: git rm --cached ARMeasure.zip || true
+
+      - name: Commit and push extracted files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ARMeasure
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Nothing to commit"
+          else
+            git commit -m "Unzip ARMeasure.zip and commit extracted project"
+            git push
+          fi
