@@ -1,9 +1,0 @@
-<resources>
-    <string name="app_name">AR Measure</string>
-    <string name="tap_to_start">Point at a surface, tap to place the first point</string>
-    <string name="tap_second_point">Tap again to place the second point</string>
-    <string name="reset">Reset</string>
-    <string name="units_m">Units: m</string>
-    <string name="units_ft">Units: ft</string>
-    <string name="ar_unavailable">ARCore is not available on this device</string>
-</resources>
