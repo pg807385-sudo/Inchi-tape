@@ -19,7 +19,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Remove any old extracted folder
+      - name: Remove any old extracted folder (flatten previous run too)
         run: rm -rf ARMeasure
 
       - name: Unzip into a clean temp dir
@@ -28,14 +28,18 @@ jobs:
           mkdir -p /tmp/extracted
           unzip -o ARMeasure.zip -d /tmp/extracted
 
-      - name: Place extracted project at repo root as ARMeasure/
+      - name: Move contents directly to repo root
         run: |
+          # If the zip has a single top-level "ARMeasure" folder, reach inside it
+          # and move its contents to repo root — no wrapper folder.
           if [ -d /tmp/extracted/ARMeasure ] && [ "$(ls /tmp/extracted | wc -l)" -eq 1 ]; then
-            mv /tmp/extracted/ARMeasure ./ARMeasure
+            SRC=/tmp/extracted/ARMeasure
           else
-            mv /tmp/extracted ./ARMeasure
+            SRC=/tmp/extracted
           fi
-          ls -la ARMeasure
+          shopt -s dotglob
+          mv "$SRC"/* .
+          ls -la
 
       - name: Delete the zip file from the repo
         run: rm -f ARMeasure.zip
@@ -48,6 +52,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "Nothing to commit"
           else
-            git commit -m "Unzip ARMeasure.zip into ARMeasure/ and remove the zip"
+            git commit -m "Flatten project to repo root and remove zip"
             git push
           fi
