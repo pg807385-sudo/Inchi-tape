@@ -17,26 +17,23 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import kotlin.math.atan2
 import kotlin.math.tan
 
 /**
- * Camera-and-tilt-angle measuring tool - the classic "clinometer" technique
- * surveyors have used for centuries, no depth sensor or ARCore required.
+ * Camera + tilt-angle measuring tool. Works on any phone with a camera and
+ * an accelerometer (i.e. every Android phone) - no ARCore, no magnetometer
+ * even. Distance/height are computed with basic trigonometry from the tilt
+ * angle of the phone.
  *
- * How it works:
- *  - You tell the app how high off the ground your phone is (measure once
- *    with a tape measure, or estimate).
- *  - You calibrate "level" by holding the phone pointing exactly horizontal
- *    and tapping Calibrate - this cancels out any sensor offset/drift.
- *  - Distance-to-point mode: aim the crosshair at a point on the ground and
- *    tap Measure. horizontalDistance = phoneHeight / tan(angleBelowLevel)
- *  - Object-height mode: aim at the base of an object (tap Set Base) to get
- *    the horizontal distance, then aim at the top (tap Set Top).
- *    objectHeight = phoneHeight + horizontalDistance * tan(angleAboveLevel)
- *
- * This only needs a normal camera and the accelerometer, both present on
- * essentially every Android phone -- it runs fine on Android 9 and on
- * devices that Google Play Services for AR refuses to support.
+ * Guided flow (this is the "easier to use" part):
+ *  1. Enter phone height off the ground (a couple of quick presets, or type
+ *     your own).
+ *  2. Hold the phone level, tap "This is level."
+ *  3. Tilt the phone down toward the floor, tap "This is tilted down."
+ *     -> this auto-detects which sensor direction means "down" on this
+ *        specific device, instead of me guessing (this was the bug).
+ *  4. Aim and measure.
  */
 class MainActivity : AppCompatActivity(), SensorEventListener {
 
@@ -44,30 +41,32 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private lateinit var statusText: TextView
     private lateinit var angleText: TextView
     private lateinit var heightInput: EditText
-    private lateinit var calibrateButton: Button
-    private lateinit var actionButton: Button
+    private lateinit var primaryButton: Button
     private lateinit var modeButton: Button
     private lateinit var resetButton: Button
+    private lateinit var presetChestButton: Button
+    private lateinit var presetEyeButton: Button
 
     private lateinit var sensorManager: SensorManager
+    private var gravitySensor: Sensor? = null
     private var accelerometer: Sensor? = null
-    private var magnetometer: Sensor? = null
 
-    private val gravity = FloatArray(3)
-    private val geomagnetic = FloatArray(3)
+    // Low-pass-filtered gravity vector, in device coordinates
+    private val gravity = floatArrayOf(0f, 0f, 9.8f)
     private var haveGravity = false
-    private var haveGeomagnetic = false
 
-    private var currentPitchDegrees = 0f      // raw sensor pitch
-    private var calibrationOffsetDegrees = 0f // subtracted from raw pitch once calibrated
-    private var isCalibrated = false
+    private var rawPitchDegrees = 0f
+    private var levelOffsetDegrees = 0f
+    private var directionSign = 1f
 
     private var phoneHeightMeters = 1.4f
+    private var horizontalDistance: Float? = null
+
+    private enum class Stage { ENTER_HEIGHT, CALIBRATE_LEVEL, CALIBRATE_DOWN, READY }
+    private var stage = Stage.ENTER_HEIGHT
 
     private enum class Mode { HEIGHT, DISTANCE }
     private var mode = Mode.HEIGHT
-
-    private var horizontalDistance: Float? = null // captured at "Set Base" / "Measure"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -77,35 +76,33 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         statusText = findViewById(R.id.statusText)
         angleText = findViewById(R.id.angleText)
         heightInput = findViewById(R.id.heightInput)
-        calibrateButton = findViewById(R.id.calibrateButton)
-        actionButton = findViewById(R.id.actionButton)
+        primaryButton = findViewById(R.id.primaryButton)
         modeButton = findViewById(R.id.modeButton)
         resetButton = findViewById(R.id.resetButton)
+        presetChestButton = findViewById(R.id.presetChestButton)
+        presetEyeButton = findViewById(R.id.presetEyeButton)
 
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
+        gravitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY)
         accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-        magnetometer = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
 
-        calibrateButton.setOnClickListener { calibrate() }
-        actionButton.setOnClickListener { onActionTapped() }
-        resetButton.setOnClickListener { resetMeasurement() }
+        presetChestButton.setOnClickListener { heightInput.setText("1.2") }
+        presetEyeButton.setOnClickListener { heightInput.setText("1.5") }
+        primaryButton.setOnClickListener { onPrimaryTapped() }
+        resetButton.setOnClickListener { fullReset() }
         modeButton.setOnClickListener { toggleMode() }
 
-        if (hasCameraPermission()) {
-            startCamera()
-        } else {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), REQUEST_CAMERA)
-        }
+        if (hasCameraPermission()) startCamera()
+        else ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), REQUEST_CAMERA)
+
+        updateUiForStage()
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQUEST_CAMERA) {
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                startCamera()
-            } else {
-                statusText.text = "Camera permission is required to measure"
-            }
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) startCamera()
+            else statusText.text = "Camera permission is required to measure"
         }
     }
 
@@ -116,13 +113,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
         cameraProviderFuture.addListener({
             val cameraProvider = cameraProviderFuture.get()
-            val preview = Preview.Builder().build().also {
-                it.setSurfaceProvider(previewView.surfaceProvider)
-            }
-            val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+            val preview = Preview.Builder().build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
             try {
                 cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(this, cameraSelector, preview)
+                cameraProvider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview)
             } catch (e: Exception) {
                 statusText.text = "Could not start camera: ${e.message}"
             }
@@ -131,8 +125,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
     override fun onResume() {
         super.onResume()
-        accelerometer?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
-        magnetometer?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
+        val sensor = gravitySensor ?: accelerometer
+        sensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
     }
 
     override fun onPause() {
@@ -143,93 +137,76 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     // ---------------- Sensors ----------------
 
     override fun onSensorChanged(event: SensorEvent) {
-        when (event.sensor.type) {
-            Sensor.TYPE_ACCELEROMETER -> {
-                System.arraycopy(event.values, 0, gravity, 0, 3)
-                haveGravity = true
-            }
-            Sensor.TYPE_MAGNETIC_FIELD -> {
-                System.arraycopy(event.values, 0, geomagnetic, 0, 3)
-                haveGeomagnetic = true
-            }
+        if (event.sensor.type == Sensor.TYPE_GRAVITY) {
+            gravity[0] = event.values[0]; gravity[1] = event.values[1]; gravity[2] = event.values[2]
+            haveGravity = true
+        } else if (event.sensor.type == Sensor.TYPE_ACCELEROMETER && gravitySensor == null) {
+            // Fallback: low-pass filter raw accelerometer to approximate gravity
+            val alpha = 0.85f
+            gravity[0] = alpha * gravity[0] + (1 - alpha) * event.values[0]
+            gravity[1] = alpha * gravity[1] + (1 - alpha) * event.values[1]
+            gravity[2] = alpha * gravity[2] + (1 - alpha) * event.values[2]
+            haveGravity = true
+        } else {
+            return
         }
-        if (haveGravity && haveGeomagnetic) {
-            val rotationMatrix = FloatArray(9)
-            val remapped = FloatArray(9)
-            val orientation = FloatArray(3)
-            if (SensorManager.getRotationMatrix(rotationMatrix, null, gravity, geomagnetic)) {
-                // Remap so "pitch" reflects tilt of the rear camera's pointing
-                // direction relative to the horizon, for a phone held upright
-                // in portrait with the rear camera facing away from the user.
-                SensorManager.remapCoordinateSystem(
-                    rotationMatrix, SensorManager.AXIS_X, SensorManager.AXIS_Z, remapped
-                )
-                SensorManager.getOrientation(remapped, orientation)
-                val rawPitchDegrees = Math.toDegrees(orientation[1].toDouble()).toFloat()
-                currentPitchDegrees = rawPitchDegrees
-                val displayAngle = currentPitchDegrees - calibrationOffsetDegrees
-                angleText.text = String.format("%.1f°", displayAngle)
-            }
-        }
+
+        // Pitch of the phone's pointing direction, derived purely from the
+        // gravity vector - no magnetometer needed. Sign/zero-point are fixed
+        // up by the guided calibration below, so the exact convention here
+        // doesn't need to be guessed correctly in advance.
+        rawPitchDegrees = Math.toDegrees(atan2(gravity[2].toDouble(), gravity[1].toDouble())).toFloat()
+
+        val signedDownAngle = directionSign * (rawPitchDegrees - levelOffsetDegrees)
+        val arrow = if (signedDownAngle > 0.5f) "▼" else if (signedDownAngle < -0.5f) "▲" else "●"
+        angleText.text = String.format("%s %.1f°", arrow, kotlin.math.abs(signedDownAngle))
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
-    // ---------------- Measurement flow ----------------
+    // ---------------- Guided flow ----------------
 
-    private fun calibrate() {
-        val heightStr = heightInput.text.toString()
-        val h = heightStr.toFloatOrNull()
-        if (h == null || h <= 0f) {
-            statusText.text = "Enter a valid height in meters first"
-            return
+    private fun onPrimaryTapped() {
+        when (stage) {
+            Stage.ENTER_HEIGHT -> {
+                val h = heightInput.text.toString().toFloatOrNull()
+                if (h == null || h <= 0f) {
+                    statusText.text = "Enter a valid height in meters (e.g. 1.4)"
+                    return
+                }
+                phoneHeightMeters = h
+                stage = Stage.CALIBRATE_LEVEL
+            }
+            Stage.CALIBRATE_LEVEL -> {
+                if (!haveGravity) { statusText.text = "Waiting for sensor..."; return }
+                levelOffsetDegrees = rawPitchDegrees
+                stage = Stage.CALIBRATE_DOWN
+            }
+            Stage.CALIBRATE_DOWN -> {
+                if (!haveGravity) { statusText.text = "Waiting for sensor..."; return }
+                val delta = rawPitchDegrees - levelOffsetDegrees
+                if (kotlin.math.abs(delta) < 3f) {
+                    statusText.text = "Tilt further down toward the floor, then tap again"
+                    return
+                }
+                directionSign = if (delta > 0) 1f else -1f
+                stage = Stage.READY
+                resetMeasurementOnly()
+            }
+            Stage.READY -> onMeasureAction()
         }
-        phoneHeightMeters = h
-        calibrationOffsetDegrees = currentPitchDegrees
-        isCalibrated = true
-        actionButton.isEnabled = true
-        horizontalDistance = null
-        updateHintForMode()
+        updateUiForStage()
     }
 
-    private fun toggleMode() {
-        mode = if (mode == Mode.HEIGHT) Mode.DISTANCE else Mode.HEIGHT
-        modeButton.text = if (mode == Mode.HEIGHT) getString(R.string.height_mode) else getString(R.string.distance_mode)
-        resetMeasurement()
-    }
-
-    private fun resetMeasurement() {
-        horizontalDistance = null
-        actionButton.text = if (mode == Mode.HEIGHT) getString(R.string.set_base) else getString(R.string.measure_button)
-        updateHintForMode()
-    }
-
-    private fun updateHintForMode() {
-        if (!isCalibrated) {
-            statusText.text = getString(R.string.calibrate_prompt)
-            return
-        }
-        statusText.text = when (mode) {
-            Mode.HEIGHT -> if (horizontalDistance == null) getString(R.string.aim_base_hint) else getString(R.string.aim_top_hint)
-            Mode.DISTANCE -> getString(R.string.aim_point_hint)
-        }
-        actionButton.text = when (mode) {
-            Mode.HEIGHT -> if (horizontalDistance == null) getString(R.string.set_base) else getString(R.string.set_top)
-            Mode.DISTANCE -> getString(R.string.measure_button)
-        }
-    }
-
-    private fun onActionTapped() {
-        if (!isCalibrated) return
-        val angleDegrees = currentPitchDegrees - calibrationOffsetDegrees
-        val angleRadians = Math.toRadians(angleDegrees.toDouble())
+    private fun onMeasureAction() {
+        val signedDownAngle = directionSign * (rawPitchDegrees - levelOffsetDegrees)
+        val downRadians = Math.toRadians(signedDownAngle.toDouble())
 
         when (mode) {
             Mode.DISTANCE -> {
-                // Point is below the horizon -> angle should be negative (looking down)
-                val tanAngle = tan(-angleRadians).toFloat()
-                if (tanAngle <= 0f) {
-                    statusText.text = "Tilt the phone downward toward the point first"
+                val tanAngle = tan(downRadians).toFloat()
+                if (tanAngle <= 0.02f) {
+                    statusText.text = "Tilt the phone down toward the point first"
                     return
                 }
                 val distance = phoneHeightMeters / tanAngle
@@ -237,20 +214,73 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             }
             Mode.HEIGHT -> {
                 if (horizontalDistance == null) {
-                    val tanAngle = tan(-angleRadians).toFloat()
-                    if (tanAngle <= 0f) {
-                        statusText.text = "Tilt the phone downward toward the base first"
+                    val tanAngle = tan(downRadians).toFloat()
+                    if (tanAngle <= 0.02f) {
+                        statusText.text = "Tilt the phone down toward the base first"
                         return
                     }
                     horizontalDistance = phoneHeightMeters / tanAngle
-                    updateHintForMode()
+                    statusText.text = "Base set. Now aim at the top and tap the button again"
+                    primaryButton.text = "Set Top"
                 } else {
                     val d = horizontalDistance!!
-                    val tanAngle = tan(angleRadians).toFloat()
-                    val objectHeight = phoneHeightMeters + d * tanAngle
-                    statusText.text = String.format("Height: %.2f m (distance %.2f m)", objectHeight, d)
-                    actionButton.text = getString(R.string.set_base)
+                    val upAngleRadians = -downRadians
+                    val objectHeight = phoneHeightMeters + d * tan(upAngleRadians).toFloat()
+                    statusText.text = String.format("Height: %.2f m  (distance %.2f m)", objectHeight, d)
+                    primaryButton.text = "Set Base"
                     horizontalDistance = null
+                }
+            }
+        }
+    }
+
+    private fun toggleMode() {
+        mode = if (mode == Mode.HEIGHT) Mode.DISTANCE else Mode.HEIGHT
+        modeButton.text = if (mode == Mode.HEIGHT) "Mode: Height" else "Mode: Distance"
+        resetMeasurementOnly()
+        updateUiForStage()
+    }
+
+    private fun resetMeasurementOnly() {
+        horizontalDistance = null
+        if (stage == Stage.READY) {
+            primaryButton.text = if (mode == Mode.HEIGHT) "Set Base" else "Measure"
+        }
+    }
+
+    private fun fullReset() {
+        stage = Stage.ENTER_HEIGHT
+        horizontalDistance = null
+        updateUiForStage()
+    }
+
+    private fun updateUiForStage() {
+        when (stage) {
+            Stage.ENTER_HEIGHT -> {
+                statusText.text = "How high off the ground is your phone? Pick a preset or type it in."
+                primaryButton.text = "Next"
+                heightInput.isEnabled = true
+            }
+            Stage.CALIBRATE_LEVEL -> {
+                statusText.text = "Hold the phone level, pointing straight at the horizon, then tap the button"
+                primaryButton.text = "This is level"
+                heightInput.isEnabled = false
+            }
+            Stage.CALIBRATE_DOWN -> {
+                statusText.text = "Now tilt the phone down toward the floor (about halfway), then tap the button"
+                primaryButton.text = "This is tilted down"
+            }
+            Stage.READY -> {
+                statusText.text = when (mode) {
+                    Mode.HEIGHT -> if (horizontalDistance == null)
+                        "Aim at the BASE of the object, then tap the button"
+                    else
+                        "Now aim at the TOP of the object, then tap the button"
+                    Mode.DISTANCE -> "Aim at a point on the ground, then tap the button"
+                }
+                primaryButton.text = when (mode) {
+                    Mode.HEIGHT -> if (horizontalDistance == null) "Set Base" else "Set Top"
+                    Mode.DISTANCE -> "Measure"
                 }
             }
         }
